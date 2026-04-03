@@ -1,0 +1,69 @@
+# --- OS & editor ---
+.DS_Store
+**/.DS_Store
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Large media (outputs / source video) ---
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+
+# --- ML weights & serialized models ---
+*.pt
+*.pth
+*.onnx
+*.joblib
+*.h5
+*.ckpt
+*.safetensors
+*.weights
+*.engine
+*.trt
+
+# --- Archives (often full datasets) ---
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# --- Root / misc data dumps ---
+/data/
+
+# --- Task 2: very large Kaggle-style CSVs (keep smaller teaching CSVs tracked) ---
+task phase 2/test.csv
+task phase 2/train-2.csv
+
+# --- Task 4: image splits & bundled homework tree ---
+task phase 4/Train/
+task phase 4/Test/
+task phase 4/A,B,CNNS_with_Tim/
+
+# --- Task 6: YOLO tree, trained weights, experiment runs ---
+task phase 6/datasets/ball/
+task phase 6/models/
+task phase 6/runs/
+
+# --- tp6: OpenCV tracker artifacts & scratch checks ---
+tp6/_artifacts/
+tp6/_v*_check/
+tp6/_v9_smoke_check/
+
+# --- ROS / build (if ever built inside repo) ---
+**/build/
+**/install/
+**/log/

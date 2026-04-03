@@ -4,7 +4,7 @@ set -euo pipefail
 MAP_NAME="${1:-map_basic.yaml}"
 WS_DIR="${HOME}/ros2_ws"
 MAP_PATH="${WS_DIR}/maps/${MAP_NAME}"
-ROS_SETUP="/opt/ros/humble/setup.bash"
+ROS_SETUP="/opt/ros/jazzy/setup.bash"
 WS_SETUP="${WS_DIR}/install/setup.bash"
 
 if [[ ! -f "${MAP_PATH}" ]]; then

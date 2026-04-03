@@ -1,0 +1,14 @@
+frame_id: map
+snack_locations:
+  - name: snack_left
+    x: -1.80
+    y: 0.90
+    yaw: 0.00
+  - name: snack_top
+    x: 0.90
+    y: 1.80
+    yaw: -1.57
+  - name: snack_right
+    x: 1.80
+    y: -0.90
+    yaw: 3.14
