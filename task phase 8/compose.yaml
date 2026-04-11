@@ -1,0 +1,30 @@
+services:
+  task8:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: task8-ros-humble-rviz
+    image: task8-ros-humble-rviz:local
+    init: true
+    ports:
+      - "127.0.0.1:6080:6080"
+    shm_size: 512m
+    stdin_open: true
+    tty: true
+    stop_grace_period: 10s
+    working_dir: /ws
+    environment:
+      DISPLAY: ":1"
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_X11_NO_MITSHM: "1"
+      XDG_RUNTIME_DIR: /tmp/runtime-ros
+      NO_AT_BRIDGE: "1"
+    volumes:
+      - .:/project:ro
+      - ./ws:/ws
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:6080/vnc.html >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s

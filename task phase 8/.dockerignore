@@ -1,0 +1,6 @@
+.git
+ws/build
+ws/install
+ws/log
+**/__pycache__
+**/.DS_Store

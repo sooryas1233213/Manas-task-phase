@@ -1,0 +1,41 @@
+video_bridge:
+  ros__parameters:
+    video_path: /project/video.mp4
+    output_width: 960
+    output_height: 540
+    publish_fps: 15.0
+    frame_id: camera_optical_frame
+    image_topic: /camera/image_raw
+    camera_info_topic: /camera/camera_info
+    camera_info_mode: approx
+    horizontal_fov_deg: 90.0
+    camera_info_yaml: ""
+
+vo_node:
+  ros__parameters:
+    image_topic: /camera/image_raw
+    camera_info_topic: /camera/camera_info
+    odom_topic: /vo/odom
+    path_topic: /vo/path
+    debug_image_topic: /vo/debug_tracks
+    odom_frame_id: odom
+    base_frame_id: base_link
+    camera_link_frame_id: camera_link
+    camera_optical_frame_id: camera_optical_frame
+    use_rectified_images: false
+    enable_clahe: true
+    publish_debug_image: true
+    camera_height_m: 1.3
+    max_features: 1500
+    min_inliers: 60
+    min_tracked_points: 120
+    min_feature_distance_px: 10.0
+    shi_tomasi_quality_level: 0.01
+    shi_tomasi_block_size: 7
+    lk_win_size: 21
+    lk_max_level: 3
+    lk_max_iterations: 30
+    lk_epsilon: 0.01
+    ransac_threshold_px: 1.0
+    translation_step_scale: 1.0
+    feature_border_px: 20
