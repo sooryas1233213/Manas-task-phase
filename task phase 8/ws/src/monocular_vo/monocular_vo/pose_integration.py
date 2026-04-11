@@ -67,6 +67,29 @@ def integrate_camera_motion(
     return world_from_camera_optical @ invert_transform(current_from_previous)
 
 
+def scaled_camera_motion_transform(
+    rotation: np.ndarray,
+    translation_unit: np.ndarray,
+    step_scale_m: float,
+) -> np.ndarray:
+    return make_transform(
+        np.asarray(rotation, dtype=np.float64).reshape(3, 3),
+        np.asarray(translation_unit, dtype=np.float64).reshape(3) * float(step_scale_m),
+    )
+
+
+def zero_translation_transform(transform: np.ndarray) -> np.ndarray:
+    rotation = np.asarray(transform[:3, :3], dtype=np.float64).reshape(3, 3)
+    return make_transform(rotation, np.zeros(3, dtype=np.float64))
+
+
+def integrate_camera_rotation_only(
+    world_from_camera_optical: np.ndarray,
+    current_from_previous: np.ndarray,
+) -> np.ndarray:
+    return world_from_camera_optical @ invert_transform(zero_translation_transform(current_from_previous))
+
+
 def world_from_base_transform(
     world_from_camera_optical: np.ndarray,
     base_to_camera_optical: np.ndarray,

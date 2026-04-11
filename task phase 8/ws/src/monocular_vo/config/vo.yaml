@@ -26,6 +26,9 @@ vo_node:
     enable_clahe: true
     publish_debug_image: true
     camera_height_m: 1.3
+    camera_translation_x: 0.0
+    camera_translation_y: 0.0
+    camera_translation_z: 0.0
     max_features: 1500
     min_inliers: 60
     min_tracked_points: 120
@@ -37,5 +40,32 @@ vo_node:
     lk_max_iterations: 30
     lk_epsilon: 0.01
     ransac_threshold_px: 1.0
-    translation_step_scale: 1.0
+    translation_step_scale: 1.0  # Bootstrap fallback until a stable ground-plane scale is available.
     feature_border_px: 20
+    klt_fb_max_error_px: 1.5
+    min_geometry_points: 30
+    min_parallax_px: 2.0
+    max_median_epipolar_error_px: 1.5
+    enable_homography_gate: true
+    homography_dominance_ratio: 1.15
+    homography_ransac_threshold_px: 3.0
+    yaw_only_min_rotation_deg: 0.4
+    orb_reseed_threshold: 100
+    orb_max_features: 600
+    grid_rows: 4
+    grid_cols: 8
+    consecutive_rejects_for_reseed: 2
+    scale_mode: ground_plane
+    min_scale_track_age: 3
+    ground_region_min_y_frac: 0.55
+    triangulation_min_parallax_px: 3.0
+    ground_flow_angle_tolerance_deg: 20.0
+    min_scale_candidate_points: 30
+    min_plane_inliers: 20
+    min_plane_inlier_ratio: 0.5
+    max_ground_normal_deviation_deg: 35.0
+    scale_ema_alpha: 0.25
+    max_scale_jump_ratio: 1.5
+    min_scale_confidence: 0.55
+    min_step_scale_m: 0.01
+    max_step_scale_m: 5.0

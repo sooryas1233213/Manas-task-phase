@@ -28,10 +28,38 @@ fi
 
 echo "Starting monocular_vo launch..."
 docker exec "${container}" bash -lc "
-  pids=\$(ps -ef | grep '[r]os2 launch monocular_vo vo.launch.py' | awk '{print \$2}')
-  if [[ -n \"\${pids}\" ]]; then
-    kill \${pids}
-  fi
+  python3 - <<'PY'
+import os
+import signal
+
+patterns = [
+    '/opt/ros/humble/bin/ros2 launch monocular_vo vo.launch.py',
+    '/ws/install/monocular_vo/lib/monocular_vo/video_bridge',
+    '/ws/install/monocular_vo/lib/monocular_vo/vo_node',
+    '/opt/ros/humble/lib/tf2_ros/static_transform_publisher 0.0 0.0 0.0 0 0 0 1 base_link camera_link',
+    '/opt/ros/humble/lib/tf2_ros/static_transform_publisher 0 0 0 -0.5 0.5 -0.5 0.5 camera_link camera_optical_frame',
+]
+exclude = {os.getpid(), os.getppid()}
+targets = []
+for pid in os.listdir('/proc'):
+    if not pid.isdigit():
+        continue
+    pid_int = int(pid)
+    if pid_int in exclude:
+        continue
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as fh:
+            cmdline = fh.read().replace(b'\\x00', b' ').decode(errors='ignore')
+    except OSError:
+        continue
+    if any(pattern in cmdline for pattern in patterns):
+        targets.append(pid_int)
+for pid_int in sorted(set(targets)):
+    try:
+        os.kill(pid_int, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+PY
 "
 docker exec -d "${container}" bash -lc \
   "source /opt/task8/scripts/task8_ros.sh && exec ros2 launch monocular_vo vo.launch.py >'${VO_LOG}' 2>&1"

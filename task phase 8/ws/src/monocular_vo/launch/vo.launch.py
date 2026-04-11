@@ -57,7 +57,14 @@ def generate_launch_description() -> LaunchDescription:
         executable="vo_node",
         name="vo_node",
         output="screen",
-        parameters=[LaunchConfiguration("config_file")],
+        parameters=[
+            LaunchConfiguration("config_file"),
+            {
+                "camera_translation_x": LaunchConfiguration("camera_x"),
+                "camera_translation_y": LaunchConfiguration("camera_y"),
+                "camera_translation_z": LaunchConfiguration("camera_z"),
+            },
+        ],
     )
 
     base_to_camera = Node(

@@ -17,13 +17,14 @@ setup(
     zip_safe=True,
     maintainer="sooryas",
     maintainer_email="sooryas@local.dev",
-    description="Phase 1 baseline for Task 8 dashcam monocular visual odometry.",
+    description="Phase 3 scaled baseline for Task 8 dashcam monocular visual odometry.",
     license="MIT",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "video_bridge = monocular_vo.video_bridge:main",
             "vo_node = monocular_vo.vo_node:main",
+            "phase3_scale_sanity = monocular_vo.scale_sanity:main",
         ],
     },
 )
