@@ -17,7 +17,7 @@ setup(
     zip_safe=True,
     maintainer="sooryas",
     maintainer_email="sooryas@local.dev",
-    description="Phase 3 scaled baseline for Task 8 dashcam monocular visual odometry.",
+    description="Scaled baseline for Task 8 dashcam monocular visual odometry.",
     license="MIT",
     tests_require=["pytest"],
     entry_points={

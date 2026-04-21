@@ -65,13 +65,11 @@ COPY config/rviz/task8_humble.rviz /opt/task8/rviz/task8_humble.rviz
 COPY scripts/task8_ros.sh /opt/task8/scripts/task8_ros.sh
 COPY scripts/profile_task8_ros.sh /etc/profile.d/task8_ros.sh
 COPY scripts/run_rviz.sh /opt/task8/scripts/run_rviz.sh
-COPY scripts/smoke_demo.sh /opt/task8/scripts/smoke_demo.sh
 COPY scripts/task8-supervisord.conf /etc/supervisor/conf.d/task8-supervisord.conf
 
 RUN chmod +x \
       /opt/task8/scripts/task8_ros.sh \
       /opt/task8/scripts/run_rviz.sh \
-      /opt/task8/scripts/smoke_demo.sh \
       /etc/profile.d/task8_ros.sh
 
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/task8-supervisord.conf"]

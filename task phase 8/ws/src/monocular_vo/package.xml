@@ -2,7 +2,7 @@
 <package format="3">
   <name>monocular_vo</name>
   <version>0.0.1</version>
-  <description>Phase 3 scaled baseline for Task 8 dashcam monocular visual odometry.</description>
+  <description>Scaled baseline for Task 8 dashcam monocular visual odometry.</description>
 
   <maintainer email="sooryas@local.dev">sooryas</maintainer>
   <license>MIT</license>

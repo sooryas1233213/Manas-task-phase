@@ -270,7 +270,7 @@ class MonocularVoNode(Node):
 
         self.get_logger().info(
             (
-                f"Phase 3 VO node ready. Waiting on {self.image_topic} and {self.camera_info_topic}. "
+                f"VO node ready. Waiting on {self.image_topic} and {self.camera_info_topic}. "
                 f"max_features={self.tracking_config.max_features}, min_inliers={self.min_inliers}, "
                 f"min_geometry_points={self.min_geometry_points}, orb_reseed_threshold={self.orb_reseed_threshold}, "
                 f"scale_mode={self.scale_config.scale_mode}, "
