@@ -24,7 +24,6 @@ setup(
         "console_scripts": [
             "video_bridge = monocular_vo.video_bridge:main",
             "vo_node = monocular_vo.vo_node:main",
-            "phase3_scale_sanity = monocular_vo.scale_sanity:main",
         ],
     },
 )

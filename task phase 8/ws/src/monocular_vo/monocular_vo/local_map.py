@@ -13,23 +13,23 @@ _MIN_DEPTH_M = 1e-6
 
 
 @dataclass(frozen=True)
-class LocalMapConfig:
+class LocalMapCfg:
     max_keyframes: int
     keyframe_min_accepted_frames: int
-    keyframe_force_frames: int
+    kf_force_frames: int
     keyframe_rotation_thresh_deg: float
     keyframe_parallax_thresh_px: float
     keyframe_track_overlap_ratio: float
     min_landmarks: int
-    max_reprojection_error_px: float
-    max_iterations: int
-    max_yaw_update_deg: float
-    max_translation_update_ratio: float
+    max_reproj_px: float
+    max_iters: int
+    max_yaw_deg: float
+    max_step_ratio: float
 
 
 @dataclass(frozen=True)
-class KeyframeRecord:
-    accepted_frame_index: int
+class KeyframeRec:
+    frame_idx: int
     world_from_camera_optical: np.ndarray
     world_from_base: np.ndarray
     track_points_by_id: dict[int, np.ndarray]
@@ -37,77 +37,77 @@ class KeyframeRecord:
 
 
 @dataclass(frozen=True)
-class LandmarkRecord:
+class LandmarkRec:
     track_id: int
     world_point: np.ndarray
-    source_keyframe_indices: tuple[int, int]
-    last_reprojection_error_px: float
+    src_kf_indices: tuple[int, int]
+    last_reproj_px: float
     support_count: int
-    last_seen_accepted_frame_index: int
+    last_seen_frame_idx: int
 
 
 @dataclass(frozen=True)
-class PoseRefinementResult:
+class RefineResult:
     attempted: bool
     accepted: bool
     status: str
     refined_planar_pose: PlanarPose
-    visible_landmark_count: int
-    grid_cell_count: int
+    vis_lm_count: int
+    grid_cells: int
     rmse_before: float
     rmse_after: float
     matched_track_ids: np.ndarray
-    residual_norms_px: np.ndarray
+    resid_px: np.ndarray
 
 
 def insert_keyframe(
-    keyframes: deque[KeyframeRecord],
-    landmarks: dict[int, LandmarkRecord],
-    new_keyframe: KeyframeRecord,
+    keyframes: deque[KeyframeRec],
+    landmarks: dict[int, LandmarkRec],
+    new_keyframe: KeyframeRec,
     camera_matrix: np.ndarray,
-    config: LocalMapConfig,
+    config: LocalMapCfg,
     triangulation_min_parallax_px: float,
 ) -> int:
-    previous_keyframe = keyframes[-1] if keyframes else None
+    prev_kf = keyframes[-1] if keyframes else None
     keyframes.append(new_keyframe)
 
-    added_landmarks = {}
-    if previous_keyframe is not None:
-        added_landmarks = triangulate_new_landmarks(
-            previous_keyframe=previous_keyframe,
+    added_lms = {}
+    if prev_kf is not None:
+        added_lms = triangulate_new_landmarks(
+            previous_keyframe=prev_kf,
             current_keyframe=new_keyframe,
             camera_matrix=camera_matrix,
-            max_reprojection_error_px=config.max_reprojection_error_px,
+            max_reprojection_error_px=config.max_reproj_px,
             min_parallax_px=triangulation_min_parallax_px,
         )
-        landmarks.update(added_landmarks)
+        landmarks.update(added_lms)
 
     while len(keyframes) > config.max_keyframes:
         keyframes.popleft()
 
-    active_keyframe_indices = {keyframe.accepted_frame_index for keyframe in keyframes}
+    active_kf_indices = {keyframe.frame_idx for keyframe in keyframes}
     stale_track_ids = [
         track_id
         for track_id, landmark in landmarks.items()
-        if any(index not in active_keyframe_indices for index in landmark.source_keyframe_indices)
+        if any(index not in active_kf_indices for index in landmark.src_kf_indices)
         or (
-            np.isfinite(landmark.last_reprojection_error_px)
-            and landmark.last_reprojection_error_px > config.max_reprojection_error_px * 2.0
+            np.isfinite(landmark.last_reproj_px)
+            and landmark.last_reproj_px > config.max_reproj_px * 2.0
         )
     ]
     for track_id in stale_track_ids:
         landmarks.pop(track_id, None)
 
-    return len(added_landmarks)
+    return len(added_lms)
 
 
 def triangulate_new_landmarks(
-    previous_keyframe: KeyframeRecord,
-    current_keyframe: KeyframeRecord,
+    previous_keyframe: KeyframeRec,
+    current_keyframe: KeyframeRec,
     camera_matrix: np.ndarray,
     max_reprojection_error_px: float,
     min_parallax_px: float,
-) -> dict[int, LandmarkRecord]:
+) -> dict[int, LandmarkRec]:
     shared_track_ids = sorted(
         set(previous_keyframe.track_points_by_id.keys()) & set(current_keyframe.track_points_by_id.keys())
     )
@@ -155,28 +155,28 @@ def triangulate_new_landmarks(
         camera_matrix=camera_matrix,
     )
 
-    landmarks: dict[int, LandmarkRecord] = {}
-    for track_id, world_point, reprojection_error_px in zip(
+    landmarks: dict[int, LandmarkRec] = {}
+    for track_id, world_point, reproj_px in zip(
         filtered_track_ids[valid_mask].tolist(),
         world_points,
         reprojection_errors.tolist(),
     ):
-        landmarks[int(track_id)] = LandmarkRecord(
+        landmarks[int(track_id)] = LandmarkRec(
             track_id=int(track_id),
             world_point=np.asarray(world_point, dtype=np.float64),
-            source_keyframe_indices=(
-                previous_keyframe.accepted_frame_index,
-                current_keyframe.accepted_frame_index,
+            src_kf_indices=(
+                previous_keyframe.frame_idx,
+                current_keyframe.frame_idx,
             ),
-            last_reprojection_error_px=float(reprojection_error_px),
+            last_reproj_px=float(reproj_px),
             support_count=2,
-            last_seen_accepted_frame_index=current_keyframe.accepted_frame_index,
+            last_seen_frame_idx=current_keyframe.frame_idx,
         )
     return landmarks
 
 
 def collect_visible_landmarks(
-    landmarks: dict[int, LandmarkRecord],
+    landmarks: dict[int, LandmarkRec],
     current_track_ids: np.ndarray,
     current_points: np.ndarray,
     image_shape: tuple[int, int],
@@ -239,33 +239,33 @@ def refine_current_pose(
     camera_matrix: np.ndarray,
     base_to_camera_optical: np.ndarray,
     current_step_length_m: float,
-    config: LocalMapConfig,
-) -> PoseRefinementResult:
+    config: LocalMapCfg,
+) -> RefineResult:
     if matched_track_ids.size < config.min_landmarks:
-        return PoseRefinementResult(
+        return RefineResult(
             attempted=False,
             accepted=False,
             status="too_few_visible_landmarks",
             refined_planar_pose=current_planar_pose,
-            visible_landmark_count=int(matched_track_ids.size),
-            grid_cell_count=int(grid_cell_count),
+            vis_lm_count=int(matched_track_ids.size),
+            grid_cells=int(grid_cell_count),
             rmse_before=float("inf"),
             rmse_after=float("inf"),
             matched_track_ids=matched_track_ids,
-            residual_norms_px=np.empty((0,), dtype=np.float64),
+            resid_px=np.empty((0,), dtype=np.float64),
         )
     if grid_cell_count < _MIN_GRID_CELLS:
-        return PoseRefinementResult(
+        return RefineResult(
             attempted=False,
             accepted=False,
             status="insufficient_grid_coverage",
             refined_planar_pose=current_planar_pose,
-            visible_landmark_count=int(matched_track_ids.size),
-            grid_cell_count=int(grid_cell_count),
+            vis_lm_count=int(matched_track_ids.size),
+            grid_cells=int(grid_cell_count),
             rmse_before=float("inf"),
             rmse_after=float("inf"),
             matched_track_ids=matched_track_ids,
-            residual_norms_px=np.empty((0,), dtype=np.float64),
+            resid_px=np.empty((0,), dtype=np.float64),
         )
 
     params = np.array(
@@ -280,17 +280,17 @@ def refine_current_pose(
         base_to_camera_optical=base_to_camera_optical,
     )
     if residual_vector is None or not valid_depth:
-        return PoseRefinementResult(
+        return RefineResult(
             attempted=False,
             accepted=False,
             status="invalid_initial_projection",
             refined_planar_pose=current_planar_pose,
-            visible_landmark_count=int(matched_track_ids.size),
-            grid_cell_count=int(grid_cell_count),
+            vis_lm_count=int(matched_track_ids.size),
+            grid_cells=int(grid_cell_count),
             rmse_before=float("inf"),
             rmse_after=float("inf"),
             matched_track_ids=matched_track_ids,
-            residual_norms_px=np.empty((0,), dtype=np.float64),
+            resid_px=np.empty((0,), dtype=np.float64),
         )
 
     rmse_before = float(np.sqrt(np.mean(residual_norms * residual_norms)))
@@ -299,7 +299,7 @@ def refine_current_pose(
     lambda_diag = 1e-3
     step_eps = np.array([1e-2, 1e-2, np.deg2rad(0.1)], dtype=np.float64)
 
-    for _ in range(config.max_iterations):
+    for _ in range(config.max_iters):
         residual_vector, residual_norms, valid_depth = _residuals_from_planar_pose(
             params=best_params,
             world_points=world_points,
@@ -310,7 +310,7 @@ def refine_current_pose(
         if residual_vector is None or not valid_depth:
             break
 
-        huber_weights = _huber_weights(residual_norms, config.max_reprojection_error_px)
+        huber_weights = _huber_weights(residual_norms, config.max_reproj_px)
         sqrt_weights = np.repeat(np.sqrt(huber_weights), 2)
         weighted_residual_vector = residual_vector * sqrt_weights
 
@@ -375,43 +375,43 @@ def refine_current_pose(
         base_to_camera_optical=base_to_camera_optical,
     )
     if refined_residual_vector is None or not refined_valid_depth:
-        return PoseRefinementResult(
+        return RefineResult(
             attempted=True,
             accepted=False,
             status="invalid_refined_projection",
             refined_planar_pose=current_planar_pose,
-            visible_landmark_count=int(matched_track_ids.size),
-            grid_cell_count=int(grid_cell_count),
+            vis_lm_count=int(matched_track_ids.size),
+            grid_cells=int(grid_cell_count),
             rmse_before=rmse_before,
             rmse_after=float("inf"),
             matched_track_ids=matched_track_ids,
-            residual_norms_px=np.empty((0,), dtype=np.float64),
+            resid_px=np.empty((0,), dtype=np.float64),
         )
 
     if not best_rmse + 1e-9 < rmse_before:
         status = "rmse_not_improved"
         accepted = False
-    elif abs(yaw_update_deg) > config.max_yaw_update_deg:
+    elif abs(yaw_update_deg) > config.max_yaw_deg:
         status = "yaw_update_too_large"
         accepted = False
-    elif translation_update_norm > config.max_translation_update_ratio * max(current_step_length_m, 1e-3):
+    elif translation_update_norm > config.max_step_ratio * max(current_step_length_m, 1e-3):
         status = "translation_update_too_large"
         accepted = False
     else:
         status = "refinement_applied"
         accepted = True
 
-    return PoseRefinementResult(
+    return RefineResult(
         attempted=True,
         accepted=accepted,
         status=status,
         refined_planar_pose=refined_planar_pose if accepted else current_planar_pose,
-        visible_landmark_count=int(matched_track_ids.size),
-        grid_cell_count=int(grid_cell_count),
+        vis_lm_count=int(matched_track_ids.size),
+        grid_cells=int(grid_cell_count),
         rmse_before=rmse_before,
         rmse_after=best_rmse,
         matched_track_ids=matched_track_ids,
-        residual_norms_px=refined_residual_norms if accepted else np.empty((0,), dtype=np.float64),
+        resid_px=refined_residual_norms if accepted else np.empty((0,), dtype=np.float64),
     )
 
 
@@ -445,8 +445,8 @@ def _project_world_points(
 
 def _mean_two_view_reprojection_errors(
     world_points: np.ndarray,
-    previous_keyframe: KeyframeRecord,
-    current_keyframe: KeyframeRecord,
+    previous_keyframe: KeyframeRec,
+    current_keyframe: KeyframeRec,
     previous_points: np.ndarray,
     current_points: np.ndarray,
     camera_matrix: np.ndarray,
