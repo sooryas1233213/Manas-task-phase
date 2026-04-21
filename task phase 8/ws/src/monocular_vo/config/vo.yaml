@@ -69,3 +69,17 @@ vo_node:
     min_scale_confidence: 0.55
     min_step_scale_m: 0.01
     max_step_scale_m: 5.0
+    enable_vehicle_motion_projection: true
+    enable_local_map_refinement: true
+    keyframe_min_accepted_frames: 8
+    keyframe_force_frames: 12
+    keyframe_rotation_thresh_deg: 4.0
+    keyframe_parallax_thresh_px: 18.0
+    keyframe_track_overlap_ratio: 0.70
+    local_map_max_keyframes: 3
+    local_map_min_landmarks: 40
+    local_refine_max_iterations: 8
+    local_refine_max_reprojection_error_px: 2.0
+    local_refine_max_yaw_update_deg: 2.0
+    local_refine_max_translation_update_ratio: 0.15
+    diagnostics_csv_path: ""

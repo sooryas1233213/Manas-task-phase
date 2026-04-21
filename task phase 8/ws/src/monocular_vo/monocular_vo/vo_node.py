@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -24,16 +26,32 @@ from monocular_vo.frontend import (
 )
 from monocular_vo.geometry import RelativePoseEstimate, estimate_relative_pose, evaluate_homography_support
 from monocular_vo.io import CameraProcessingState, build_camera_processing_state, preprocess_frame
+from monocular_vo.local_map import (
+    KeyframeRecord,
+    LandmarkRecord,
+    LocalMapConfig,
+    PoseRefinementResult,
+    collect_visible_landmarks,
+    insert_keyframe,
+    refine_current_pose,
+)
 from monocular_vo.pose_integration import (
     PlanarPose,
     base_to_camera_optical_transform,
+    current_base_from_previous_base_transform,
     initial_world_from_camera_optical,
+    integrate_base_motion,
     integrate_camera_motion,
     integrate_camera_rotation_only,
+    planar_step_length_from_relative_base_transform,
     planar_pose_from_world_transform,
+    project_base_motion_to_planar,
+    project_base_rotation_to_yaw,
     quaternion_from_yaw,
+    rotation_matrix_from_yaw,
     scaled_camera_motion_transform,
     world_from_base_transform,
+    world_from_planar_base_pose,
 )
 from monocular_vo.scale import ScaleConfig, ScaleEstimate, estimate_ground_plane_scale, hold_scale_estimate
 
@@ -95,6 +113,15 @@ class DebugTrackOverlay:
     filtered_step_scale_m: float
     scale_confidence: float
     scale_status: str
+    vehicle_projection_used: bool
+    active_keyframes: int
+    active_landmarks: int
+    visible_landmark_count: int
+    refinement_attempted: bool
+    refinement_applied: bool
+    refinement_rmse_before: float
+    refinement_rmse_after: float
+    refinement_status: str
 
 
 def _default_debug_overlay() -> DebugTrackOverlay:
@@ -123,6 +150,15 @@ def _default_debug_overlay() -> DebugTrackOverlay:
         filtered_step_scale_m=1.0,
         scale_confidence=0.0,
         scale_status="waiting",
+        vehicle_projection_used=False,
+        active_keyframes=0,
+        active_landmarks=0,
+        visible_landmark_count=0,
+        refinement_attempted=False,
+        refinement_applied=False,
+        refinement_rmse_before=float("inf"),
+        refinement_rmse_after=float("inf"),
+        refinement_status="waiting",
     )
 
 
@@ -186,6 +222,20 @@ class MonocularVoNode(Node):
         self.declare_parameter("min_scale_confidence", 0.55)
         self.declare_parameter("min_step_scale_m", 0.01)
         self.declare_parameter("max_step_scale_m", 5.0)
+        self.declare_parameter("enable_vehicle_motion_projection", True)
+        self.declare_parameter("enable_local_map_refinement", True)
+        self.declare_parameter("keyframe_min_accepted_frames", 8)
+        self.declare_parameter("keyframe_force_frames", 12)
+        self.declare_parameter("keyframe_rotation_thresh_deg", 4.0)
+        self.declare_parameter("keyframe_parallax_thresh_px", 18.0)
+        self.declare_parameter("keyframe_track_overlap_ratio", 0.70)
+        self.declare_parameter("local_map_max_keyframes", 3)
+        self.declare_parameter("local_map_min_landmarks", 40)
+        self.declare_parameter("local_refine_max_iterations", 8)
+        self.declare_parameter("local_refine_max_reprojection_error_px", 2.0)
+        self.declare_parameter("local_refine_max_yaw_update_deg", 2.0)
+        self.declare_parameter("local_refine_max_translation_update_ratio", 0.15)
+        self.declare_parameter("diagnostics_csv_path", "")
 
         self.image_topic = self.get_parameter("image_topic").get_parameter_value().string_value
         self.camera_info_topic = self.get_parameter("camera_info_topic").get_parameter_value().string_value
@@ -215,6 +265,9 @@ class MonocularVoNode(Node):
         self.yaw_only_min_rotation_deg = float(self.get_parameter("yaw_only_min_rotation_deg").value)
         self.orb_reseed_threshold = int(self.get_parameter("orb_reseed_threshold").value)
         self.consecutive_rejects_for_reseed = int(self.get_parameter("consecutive_rejects_for_reseed").value)
+        self.enable_vehicle_motion_projection = bool(self.get_parameter("enable_vehicle_motion_projection").value)
+        self.enable_local_map_refinement = bool(self.get_parameter("enable_local_map_refinement").value)
+        self.diagnostics_csv_path = self.get_parameter("diagnostics_csv_path").get_parameter_value().string_value
         self.scale_config = ScaleConfig(
             scale_mode=self.get_parameter("scale_mode").get_parameter_value().string_value,
             min_scale_track_age=int(self.get_parameter("min_scale_track_age").value),
@@ -231,6 +284,19 @@ class MonocularVoNode(Node):
             min_step_scale_m=float(self.get_parameter("min_step_scale_m").value),
             max_step_scale_m=float(self.get_parameter("max_step_scale_m").value),
             bootstrap_scale_m=self.translation_step_scale,
+        )
+        self.local_map_config = LocalMapConfig(
+            max_keyframes=int(self.get_parameter("local_map_max_keyframes").value),
+            keyframe_min_accepted_frames=int(self.get_parameter("keyframe_min_accepted_frames").value),
+            keyframe_force_frames=int(self.get_parameter("keyframe_force_frames").value),
+            keyframe_rotation_thresh_deg=float(self.get_parameter("keyframe_rotation_thresh_deg").value),
+            keyframe_parallax_thresh_px=float(self.get_parameter("keyframe_parallax_thresh_px").value),
+            keyframe_track_overlap_ratio=float(self.get_parameter("keyframe_track_overlap_ratio").value),
+            min_landmarks=int(self.get_parameter("local_map_min_landmarks").value),
+            max_reprojection_error_px=float(self.get_parameter("local_refine_max_reprojection_error_px").value),
+            max_iterations=int(self.get_parameter("local_refine_max_iterations").value),
+            max_yaw_update_deg=float(self.get_parameter("local_refine_max_yaw_update_deg").value),
+            max_translation_update_ratio=float(self.get_parameter("local_refine_max_translation_update_ratio").value),
         )
 
         self.tracking_config = TrackingConfig(
@@ -281,6 +347,10 @@ class MonocularVoNode(Node):
             bootstrap_scale_m=self.translation_step_scale,
             reason="bootstrap_scale_only",
         )
+        self.keyframes: deque[KeyframeRecord] = deque()
+        self.landmarks: dict[int, LandmarkRecord] = {}
+        self.accepted_full_pose_count = 0
+        self._initialize_diagnostics_file()
 
         self.create_subscription(CameraInfo, self.camera_info_topic, self._on_camera_info, qos_profile_sensor_data)
         self.create_subscription(Image, self.image_topic, self._on_image, qos_profile_sensor_data)
@@ -290,7 +360,9 @@ class MonocularVoNode(Node):
                 f"Phase 3 VO node ready. Waiting on {self.image_topic} and {self.camera_info_topic}. "
                 f"max_features={self.tracking_config.max_features}, min_inliers={self.min_inliers}, "
                 f"min_geometry_points={self.min_geometry_points}, orb_reseed_threshold={self.orb_reseed_threshold}, "
-                f"scale_mode={self.scale_config.scale_mode}"
+                f"scale_mode={self.scale_config.scale_mode}, "
+                f"vehicle_projection={'on' if self.enable_vehicle_motion_projection else 'off'}, "
+                f"local_refine={'on' if self.enable_local_map_refinement else 'off'}"
             )
         )
 
@@ -329,6 +401,7 @@ class MonocularVoNode(Node):
         self._publish_pose_outputs(msg)
         if self.publish_debug_image:
             self._publish_debug_image(msg, display_bgr)
+        self._write_diagnostics_row(msg)
 
         self.frame_counter += 1
         self.missing_camera_info_warned = False
@@ -347,6 +420,9 @@ class MonocularVoNode(Node):
             bootstrap_scale_m=self.translation_step_scale,
             reason="bootstrap_scale_only",
         )
+        self.keyframes.clear()
+        self.landmarks.clear()
+        self.accepted_full_pose_count = 0
         if not self.path_msg.poses:
             self.path_msg.poses.append(self._pose_stamped_from_planar_pose(image_msg, self.last_planar_pose))
 
@@ -375,6 +451,15 @@ class MonocularVoNode(Node):
             filtered_step_scale_m=self.last_scale_estimate.filtered_step_scale_m,
             scale_confidence=0.0,
             scale_status=self.last_scale_estimate.reason,
+            vehicle_projection_used=False,
+            active_keyframes=0,
+            active_landmarks=0,
+            visible_landmark_count=0,
+            refinement_attempted=False,
+            refinement_applied=False,
+            refinement_rmse_before=float("inf"),
+            refinement_rmse_after=float("inf"),
+            refinement_status="seeded_features",
         )
 
     def _process_tracking_frame(self, grayscale: np.ndarray, image_msg: Image) -> None:
@@ -522,6 +607,299 @@ class MonocularVoNode(Node):
             rng=np.random.default_rng(self.frame_counter),
         )
 
+    def _initialize_diagnostics_file(self) -> None:
+        self._diagnostics_path: Path | None = None
+        if not self.diagnostics_csv_path:
+            return
+
+        diagnostics_path = Path(self.diagnostics_csv_path)
+        diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+        file_exists = diagnostics_path.exists()
+        self._diagnostics_path = diagnostics_path
+        if file_exists:
+            return
+
+        with diagnostics_path.open("w", newline="") as diagnostics_file:
+            writer = csv.writer(diagnostics_file)
+            writer.writerow(
+                [
+                    "frame",
+                    "stamp_sec",
+                    "decision",
+                    "reason",
+                    "inliers",
+                    "median_epipolar_error_px",
+                    "median_parallax_px",
+                    "homography_inliers",
+                    "raw_step_scale_m",
+                    "filtered_step_scale_m",
+                    "vehicle_projection_used",
+                    "keyframe_count",
+                    "landmark_count",
+                    "visible_landmark_count",
+                    "refinement_attempted",
+                    "refinement_applied",
+                    "refinement_status",
+                    "refinement_rmse_before",
+                    "refinement_rmse_after",
+                    "pose_x",
+                    "pose_y",
+                    "pose_yaw_deg",
+                ]
+            )
+
+    def _write_diagnostics_row(self, image_msg: Image) -> None:
+        if self._diagnostics_path is None:
+            return
+
+        stamp_sec = float(image_msg.header.stamp.sec) + float(image_msg.header.stamp.nanosec) * 1e-9
+        with self._diagnostics_path.open("a", newline="") as diagnostics_file:
+            writer = csv.writer(diagnostics_file)
+            writer.writerow(
+                [
+                    self.frame_counter,
+                    f"{stamp_sec:.9f}",
+                    self.last_track_overlay.decision,
+                    self.last_track_overlay.reason,
+                    self.last_track_overlay.inlier_count,
+                    self.last_track_overlay.median_epipolar_error_px,
+                    self.last_track_overlay.median_parallax_px,
+                    self.last_track_overlay.homography_inliers,
+                    self.last_track_overlay.raw_step_scale_m,
+                    self.last_track_overlay.filtered_step_scale_m,
+                    int(self.last_track_overlay.vehicle_projection_used),
+                    self.last_track_overlay.active_keyframes,
+                    self.last_track_overlay.active_landmarks,
+                    self.last_track_overlay.visible_landmark_count,
+                    int(self.last_track_overlay.refinement_attempted),
+                    int(self.last_track_overlay.refinement_applied),
+                    self.last_track_overlay.refinement_status,
+                    self.last_track_overlay.refinement_rmse_before,
+                    self.last_track_overlay.refinement_rmse_after,
+                    self.last_planar_pose.x,
+                    self.last_planar_pose.y,
+                    float(np.degrees(self.last_planar_pose.yaw)),
+                ]
+            )
+
+    def _integrate_full_pose_step(
+        self,
+        relative_pose: RelativePoseEstimate,
+        scale_estimate: ScaleEstimate,
+    ) -> tuple[np.ndarray, np.ndarray, bool, float]:
+        previous_world_from_base = world_from_base_transform(
+            world_from_camera_optical=self.world_from_camera_optical,
+            base_to_camera_optical=self.base_to_camera_optical,
+        )
+        scaled_current_from_previous = scaled_camera_motion_transform(
+            rotation=relative_pose.rotation,
+            translation_unit=relative_pose.translation,
+            step_scale_m=scale_estimate.applied_step_scale_m,
+        )
+        current_from_previous_base = current_base_from_previous_base_transform(
+            current_from_previous_camera=scaled_current_from_previous,
+            base_to_camera_optical=self.base_to_camera_optical,
+        )
+        if self.enable_vehicle_motion_projection:
+            projected_current_from_previous_base = project_base_motion_to_planar(current_from_previous_base)
+            world_from_base = integrate_base_motion(
+                world_from_base=previous_world_from_base,
+                current_from_previous_base=projected_current_from_previous_base,
+            )
+            world_from_camera_optical = world_from_base @ self.base_to_camera_optical
+            return (
+                world_from_camera_optical,
+                world_from_base,
+                True,
+                planar_step_length_from_relative_base_transform(projected_current_from_previous_base),
+            )
+
+        world_from_camera_optical = integrate_camera_motion(
+            world_from_camera_optical=self.world_from_camera_optical,
+            current_from_previous=scaled_current_from_previous,
+        )
+        world_from_base = world_from_base_transform(
+            world_from_camera_optical=world_from_camera_optical,
+            base_to_camera_optical=self.base_to_camera_optical,
+        )
+        return (
+            world_from_camera_optical,
+            world_from_base,
+            False,
+            planar_step_length_from_relative_base_transform(current_from_previous_base),
+        )
+
+    def _integrate_yaw_only_step(
+        self,
+        relative_pose: RelativePoseEstimate,
+    ) -> tuple[np.ndarray, np.ndarray, bool]:
+        if self.enable_vehicle_motion_projection:
+            previous_world_from_base = world_from_base_transform(
+                world_from_camera_optical=self.world_from_camera_optical,
+                base_to_camera_optical=self.base_to_camera_optical,
+            )
+            current_from_previous_base = current_base_from_previous_base_transform(
+                current_from_previous_camera=relative_pose.current_from_previous,
+                base_to_camera_optical=self.base_to_camera_optical,
+            )
+            projected_current_from_previous_base = project_base_rotation_to_yaw(current_from_previous_base)
+            world_from_base = integrate_base_motion(
+                world_from_base=previous_world_from_base,
+                current_from_previous_base=projected_current_from_previous_base,
+            )
+            world_from_camera_optical = world_from_base @ self.base_to_camera_optical
+            return world_from_camera_optical, world_from_base, True
+
+        world_from_camera_optical = integrate_camera_rotation_only(
+            world_from_camera_optical=self.world_from_camera_optical,
+            current_from_previous=relative_pose.current_from_previous,
+        )
+        world_from_base = world_from_base_transform(
+            world_from_camera_optical=world_from_camera_optical,
+            base_to_camera_optical=self.base_to_camera_optical,
+        )
+        return world_from_camera_optical, world_from_base, False
+
+    def _update_landmark_quality(self, refinement_result: PoseRefinementResult) -> None:
+        if not refinement_result.accepted:
+            return
+
+        stale_track_ids: list[int] = []
+        for track_id, residual_norm_px in zip(
+            refinement_result.matched_track_ids.tolist(),
+            refinement_result.residual_norms_px.tolist(),
+        ):
+            landmark = self.landmarks.get(int(track_id))
+            if landmark is None:
+                continue
+            if np.isfinite(residual_norm_px) and residual_norm_px > self.local_map_config.max_reprojection_error_px * 2.0:
+                stale_track_ids.append(int(track_id))
+                continue
+            self.landmarks[int(track_id)] = LandmarkRecord(
+                track_id=landmark.track_id,
+                world_point=np.asarray(landmark.world_point, dtype=np.float64),
+                source_keyframe_indices=landmark.source_keyframe_indices,
+                last_reprojection_error_px=float(residual_norm_px),
+                support_count=int(landmark.support_count) + 1,
+                last_seen_accepted_frame_index=self.accepted_full_pose_count,
+            )
+
+        for track_id in stale_track_ids:
+            self.landmarks.pop(track_id, None)
+
+    def _maybe_refine_current_pose(
+        self,
+        current_track_ids: np.ndarray,
+        current_points: np.ndarray,
+        image_shape: tuple[int, int],
+        current_step_length_m: float,
+    ) -> PoseRefinementResult:
+        if not self.enable_local_map_refinement:
+            return PoseRefinementResult(
+                attempted=False,
+                accepted=False,
+                status="local_refine_disabled",
+                refined_planar_pose=self.last_planar_pose,
+                visible_landmark_count=0,
+                grid_cell_count=0,
+                rmse_before=float("inf"),
+                rmse_after=float("inf"),
+                matched_track_ids=np.empty((0,), dtype=np.int64),
+                residual_norms_px=np.empty((0,), dtype=np.float64),
+            )
+        if not self.keyframes or not self.landmarks:
+            return PoseRefinementResult(
+                attempted=False,
+                accepted=False,
+                status="no_local_map_support",
+                refined_planar_pose=self.last_planar_pose,
+                visible_landmark_count=0,
+                grid_cell_count=0,
+                rmse_before=float("inf"),
+                rmse_after=float("inf"),
+                matched_track_ids=np.empty((0,), dtype=np.int64),
+                residual_norms_px=np.empty((0,), dtype=np.float64),
+            )
+
+        matched_track_ids, world_points, image_points, grid_cell_count = collect_visible_landmarks(
+            landmarks=self.landmarks,
+            current_track_ids=current_track_ids,
+            current_points=current_points,
+            image_shape=image_shape,
+            grid_rows=self.tracking_config.grid_rows,
+            grid_cols=self.tracking_config.grid_cols,
+        )
+        refinement_result = refine_current_pose(
+            current_planar_pose=self.last_planar_pose,
+            matched_track_ids=matched_track_ids,
+            world_points=world_points,
+            image_points=image_points,
+            grid_cell_count=grid_cell_count,
+            camera_matrix=self.processing_state.camera_matrix,
+            base_to_camera_optical=self.base_to_camera_optical,
+            current_step_length_m=current_step_length_m,
+            config=self.local_map_config,
+        )
+        if refinement_result.accepted:
+            self.last_planar_pose = refinement_result.refined_planar_pose
+            world_from_base = world_from_planar_base_pose(self.last_planar_pose)
+            self.world_from_camera_optical = world_from_base @ self.base_to_camera_optical
+            self._update_landmark_quality(refinement_result)
+        return refinement_result
+
+    def _maybe_insert_keyframe(
+        self,
+        live_track_ids: np.ndarray,
+        live_points: np.ndarray,
+        world_from_base: np.ndarray,
+        rotation_angle_deg: float,
+        median_parallax_px: float,
+    ) -> int:
+        if not self.enable_local_map_refinement or live_track_ids.size == 0 or live_points.size == 0:
+            return 0
+
+        track_points_by_id = {
+            int(track_id): np.asarray(point, dtype=np.float32)
+            for track_id, point in zip(live_track_ids.tolist(), live_points.reshape(-1, 2))
+        }
+        should_insert = False
+        if not self.keyframes:
+            should_insert = True
+        else:
+            latest_keyframe = self.keyframes[-1]
+            accepted_frames_since_last_keyframe = self.accepted_full_pose_count - latest_keyframe.accepted_frame_index
+            shared_track_count = len(set(track_points_by_id.keys()) & set(latest_keyframe.track_points_by_id.keys()))
+            should_insert = accepted_frames_since_last_keyframe >= self.local_map_config.keyframe_force_frames
+            if (
+                not should_insert
+                and accepted_frames_since_last_keyframe >= self.local_map_config.keyframe_min_accepted_frames
+            ):
+                should_insert = (
+                    rotation_angle_deg >= self.local_map_config.keyframe_rotation_thresh_deg
+                    or median_parallax_px >= self.local_map_config.keyframe_parallax_thresh_px
+                    or shared_track_count
+                    <= latest_keyframe.support_count * self.local_map_config.keyframe_track_overlap_ratio
+                )
+
+        if not should_insert:
+            return 0
+
+        new_keyframe = KeyframeRecord(
+            accepted_frame_index=self.accepted_full_pose_count,
+            world_from_camera_optical=np.asarray(self.world_from_camera_optical, dtype=np.float64).copy(),
+            world_from_base=np.asarray(world_from_base, dtype=np.float64).copy(),
+            track_points_by_id=track_points_by_id,
+            support_count=len(track_points_by_id),
+        )
+        return insert_keyframe(
+            keyframes=self.keyframes,
+            landmarks=self.landmarks,
+            new_keyframe=new_keyframe,
+            camera_matrix=self.processing_state.camera_matrix,
+            config=self.local_map_config,
+            triangulation_min_parallax_px=self.scale_config.triangulation_min_parallax_px,
+        )
+
     def _maybe_apply_homography_gate(self, track_result: TrackResult, relative_pose: RelativePoseEstimate) -> None:
         suspicious_frame = (
             relative_pose.health.median_parallax_px < self.min_parallax_px
@@ -601,29 +979,47 @@ class MonocularVoNode(Node):
             )
 
         if yaw_only:
-            self.world_from_camera_optical = integrate_camera_rotation_only(
-                world_from_camera_optical=self.world_from_camera_optical,
-                current_from_previous=relative_pose.current_from_previous,
+            (
+                self.world_from_camera_optical,
+                world_from_base,
+                vehicle_projection_used,
+            ) = self._integrate_yaw_only_step(relative_pose)
+            current_step_length_m = 0.0
+            refinement_result = PoseRefinementResult(
+                attempted=False,
+                accepted=False,
+                status="yaw_only_skip",
+                refined_planar_pose=self.last_planar_pose,
+                visible_landmark_count=0,
+                grid_cell_count=0,
+                rmse_before=float("inf"),
+                rmse_after=float("inf"),
+                matched_track_ids=np.empty((0,), dtype=np.int64),
+                residual_norms_px=np.empty((0,), dtype=np.float64),
             )
         else:
-            scaled_current_from_previous = scaled_camera_motion_transform(
-                rotation=relative_pose.rotation,
-                translation_unit=relative_pose.translation,
-                step_scale_m=scale_estimate.applied_step_scale_m,
-            )
-            self.world_from_camera_optical = integrate_camera_motion(
-                world_from_camera_optical=self.world_from_camera_optical,
-                current_from_previous=scaled_current_from_previous,
-            )
+            (
+                self.world_from_camera_optical,
+                world_from_base,
+                vehicle_projection_used,
+                current_step_length_m,
+            ) = self._integrate_full_pose_step(relative_pose, scale_estimate)
             if scale_estimate.scale_updated:
                 self.last_stable_scale_m = scale_estimate.filtered_step_scale_m
+            self.accepted_full_pose_count += 1
+            self.last_planar_pose = planar_pose_from_world_transform(world_from_base)
+            refinement_result = self._maybe_refine_current_pose(
+                current_track_ids=survivor_track_ids,
+                current_points=track_result.current_points,
+                image_shape=grayscale.shape[:2],
+                current_step_length_m=current_step_length_m,
+            )
+            world_from_base = world_from_base_transform(
+                world_from_camera_optical=self.world_from_camera_optical,
+                base_to_camera_optical=self.base_to_camera_optical,
+            )
 
         self.last_scale_estimate = scale_estimate
-
-        world_from_base = world_from_base_transform(
-            world_from_camera_optical=self.world_from_camera_optical,
-            base_to_camera_optical=self.base_to_camera_optical,
-        )
         self.last_planar_pose = planar_pose_from_world_transform(world_from_base)
         self.path_msg.poses.append(self._pose_stamped_from_planar_pose(image_msg, self.last_planar_pose))
 
@@ -649,6 +1045,14 @@ class MonocularVoNode(Node):
         self.previous_points = live_points
         self.previous_track_ids = live_track_ids
         self.consecutive_reject_count = 0
+        if not yaw_only:
+            self._maybe_insert_keyframe(
+                live_track_ids=live_track_ids,
+                live_points=live_points,
+                world_from_base=world_from_base,
+                rotation_angle_deg=relative_pose.health.rotation_angle_deg,
+                median_parallax_px=relative_pose.health.median_parallax_px,
+            )
 
         self.last_track_overlay = DebugTrackOverlay(
             accepted_previous_points=inlier_previous_points,
@@ -675,6 +1079,15 @@ class MonocularVoNode(Node):
             filtered_step_scale_m=scale_estimate.filtered_step_scale_m,
             scale_confidence=scale_estimate.confidence,
             scale_status=scale_estimate.reason,
+            vehicle_projection_used=vehicle_projection_used,
+            active_keyframes=len(self.keyframes),
+            active_landmarks=len(self.landmarks),
+            visible_landmark_count=refinement_result.visible_landmark_count,
+            refinement_attempted=refinement_result.attempted,
+            refinement_applied=refinement_result.accepted,
+            refinement_rmse_before=refinement_result.rmse_before,
+            refinement_rmse_after=refinement_result.rmse_after,
+            refinement_status=refinement_result.status,
         )
 
     def _handle_reject_hold(
@@ -753,6 +1166,15 @@ class MonocularVoNode(Node):
             filtered_step_scale_m=self.last_scale_estimate.filtered_step_scale_m,
             scale_confidence=self.last_scale_estimate.confidence,
             scale_status=self.last_scale_estimate.reason,
+            vehicle_projection_used=False,
+            active_keyframes=len(self.keyframes),
+            active_landmarks=len(self.landmarks),
+            visible_landmark_count=0,
+            refinement_attempted=False,
+            refinement_applied=False,
+            refinement_rmse_before=float("inf"),
+            refinement_rmse_after=float("inf"),
+            refinement_status="reject_hold",
         )
 
     def _reseed_points(
@@ -904,6 +1326,19 @@ class MonocularVoNode(Node):
                 f"Filtered {self.last_track_overlay.filtered_step_scale_m:.3f}m  "
                 f"Conf {self.last_track_overlay.scale_confidence:.2f}  "
                 f"PlaneRatio {self.last_track_overlay.plane_inlier_ratio:.2f}"
+            ),
+            (
+                f"VehicleProj {'yes' if self.last_track_overlay.vehicle_projection_used else 'no'}  "
+                f"Keyframes {self.last_track_overlay.active_keyframes}  "
+                f"Landmarks {self.last_track_overlay.active_landmarks}  "
+                f"Visible {self.last_track_overlay.visible_landmark_count}"
+            ),
+            (
+                f"Refine {self.last_track_overlay.refinement_status}  "
+                f"Attempt {'yes' if self.last_track_overlay.refinement_attempted else 'no'}  "
+                f"Applied {'yes' if self.last_track_overlay.refinement_applied else 'no'}  "
+                f"RMSE {self._format_metric(self.last_track_overlay.refinement_rmse_before)}->"
+                f"{self._format_metric(self.last_track_overlay.refinement_rmse_after)}"
             ),
             (
                 f"Pose x={self.last_planar_pose.x:.2f} y={self.last_planar_pose.y:.2f} "

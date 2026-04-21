@@ -54,10 +54,30 @@ def base_to_camera_optical_transform(
     return make_transform(rotation, np.array(camera_translation_xyz, dtype=np.float64))
 
 
+def rotation_matrix_from_yaw(yaw: float) -> np.ndarray:
+    cosine = math.cos(yaw)
+    sine = math.sin(yaw)
+    return np.array(
+        [
+            [cosine, -sine, 0.0],
+            [sine, cosine, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
+
 def initial_world_from_camera_optical(
     camera_translation_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> np.ndarray:
     return base_to_camera_optical_transform(camera_translation_xyz)
+
+
+def world_from_planar_base_pose(planar_pose: PlanarPose) -> np.ndarray:
+    return make_transform(
+        rotation_matrix_from_yaw(planar_pose.yaw),
+        np.array([planar_pose.x, planar_pose.y, 0.0], dtype=np.float64),
+    )
 
 
 def integrate_camera_motion(
@@ -65,6 +85,13 @@ def integrate_camera_motion(
     current_from_previous: np.ndarray,
 ) -> np.ndarray:
     return world_from_camera_optical @ invert_transform(current_from_previous)
+
+
+def integrate_base_motion(
+    world_from_base: np.ndarray,
+    current_from_previous_base: np.ndarray,
+) -> np.ndarray:
+    return world_from_base @ invert_transform(current_from_previous_base)
 
 
 def scaled_camera_motion_transform(
@@ -81,6 +108,47 @@ def scaled_camera_motion_transform(
 def zero_translation_transform(transform: np.ndarray) -> np.ndarray:
     rotation = np.asarray(transform[:3, :3], dtype=np.float64).reshape(3, 3)
     return make_transform(rotation, np.zeros(3, dtype=np.float64))
+
+
+def current_base_from_previous_base_transform(
+    current_from_previous_camera: np.ndarray,
+    base_to_camera_optical: np.ndarray,
+) -> np.ndarray:
+    camera_from_base = invert_transform(base_to_camera_optical)
+    return base_to_camera_optical @ current_from_previous_camera @ camera_from_base
+
+
+def project_base_motion_to_planar(current_from_previous_base: np.ndarray) -> np.ndarray:
+    previous_from_current_base = invert_transform(current_from_previous_base)
+    yaw_delta = math.atan2(
+        float(previous_from_current_base[1, 0]),
+        float(previous_from_current_base[0, 0]),
+    )
+    planar_displacement = previous_from_current_base[:2, 3]
+    forward_step_m = float(np.linalg.norm(planar_displacement))
+    previous_from_current_planar = make_transform(
+        rotation_matrix_from_yaw(yaw_delta),
+        np.array([forward_step_m, 0.0, 0.0], dtype=np.float64),
+    )
+    return invert_transform(previous_from_current_planar)
+
+
+def project_base_rotation_to_yaw(current_from_previous_base: np.ndarray) -> np.ndarray:
+    previous_from_current_base = invert_transform(current_from_previous_base)
+    yaw_delta = math.atan2(
+        float(previous_from_current_base[1, 0]),
+        float(previous_from_current_base[0, 0]),
+    )
+    previous_from_current_planar = make_transform(
+        rotation_matrix_from_yaw(yaw_delta),
+        np.zeros(3, dtype=np.float64),
+    )
+    return invert_transform(previous_from_current_planar)
+
+
+def planar_step_length_from_relative_base_transform(current_from_previous_base: np.ndarray) -> float:
+    previous_from_current_base = invert_transform(current_from_previous_base)
+    return float(np.linalg.norm(previous_from_current_base[:2, 3]))
 
 
 def integrate_camera_rotation_only(
